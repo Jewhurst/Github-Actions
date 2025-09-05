@@ -1,0 +1,139 @@
+name: Create release on merge to master
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - master
+
+permissions:
+  contents: write      # Needed to create a GitHub Release
+  issues: write        # Needed to create labels
+  pull-requests: write # Needed to add labels to PRs
+
+jobs:
+
+  release:
+    name: Release pushed changes
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true && !contains(toJson(github.event.pull_request.labels.*.name), 'no-release')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for git log
+
+      - name: Calculate Release Version
+        id: calculate_version
+        env:
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Fetch all tags to ensure we have the latest version information
+          git fetch --tags
+
+          # Get the latest tag based on the branch type
+          if [ "$BASE_BRANCH" == "master" ]; then
+            # For master, find the latest tag that is NOT a dev tag
+            LATEST_TAG=$(git tag -l 'v*' | grep -v -- '-dev' | sort -V | tail -n 1)
+          else
+            # For dev branches, find the latest dev tag. If none, find the latest prod tag to base it on.
+            LATEST_TAG=$(git tag -l 'v*-dev' | sort -V | tail -n 1)
+            if [ -z "$LATEST_TAG" ]; then
+                LATEST_TAG=$(git tag -l 'v*' | grep -v -- '-dev' | sort -V | tail -n 1)
+            fi
+          fi
+
+          if [ -z "$LATEST_TAG" ]; then
+            # If no tags exist, start with v0.1.0 
+            NEW_TAG="v0.1.0"
+          else
+            # Remove 'v' prefix and '-dev' suffix for version calculation
+            LATEST_TAG_NUM=${LATEST_TAG#v}
+            LATEST_TAG_NUM=${LATEST_TAG_NUM%-dev}
+            IFS='.' read -r -a parts <<< "$LATEST_TAG_NUM"
+            major=${parts[0]}
+            minor=${parts[1]}
+            patch=${parts[2]}
+
+            # Check PR labels for version bump type
+            if echo "$PR_LABELS" | grep -q 'major'; then
+              major=$((major + 1))
+              minor=0
+              patch=0
+            elif echo "$PR_LABELS" | grep -q 'minor'; then
+              minor=$((minor + 1))
+              patch=0
+            else
+              patch=$((patch + 1))
+            fi
+            
+            # Re-assemble with 'v' prefix
+            NEW_TAG="v${major}.${minor}.${patch}"
+          fi
+
+          # Append -dev suffix if the target branch is not master
+          if [ "$BASE_BRANCH" != "master" ]; then
+            NEW_TAG="${NEW_TAG}-dev"
+          fi
+          
+          echo "NEW_TAG=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Creating release for new tag: ${{ steps.calculate_version.outputs.NEW_TAG }}"
+          gh release create "${{ steps.calculate_version.outputs.NEW_TAG }}" \
+            --repo="$GITHUB_REPOSITORY" \
+            --title="Release ${{ steps.calculate_version.outputs.NEW_TAG }}" \
+            --generate-notes
+
+      - name: Label PRs with Release Tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          TAG_NAME="${{ steps.calculate_version.outputs.NEW_TAG }}"
+          echo "Creating label '$TAG_NAME' if it doesn't exist."
+          gh label create "$TAG_NAME" --color "0E8A16" --description "Associated release version" || echo "Label '$TAG_NAME' already exists."
+
+          echo "Labeling main release PR #$PR_NUMBER with tag '$TAG_NAME'."
+          gh pr edit $PR_NUMBER --add-label "$TAG_NAME"
+
+          echo "Finding and labeling all nested PRs between $BASE_SHA and $HEAD_SHA."
+          echo "Finding and labeling all nested PRs between $BASE_SHA and $HEAD_SHA."
+          # Get all merge commit messages
+          MERGE_COMMITS=$(git log $BASE_SHA..$HEAD_SHA --merges --pretty=format:'%s')
+
+
+          if [ -z "$MERGE_COMMITS" ]; then
+            echo "No merge commits found."
+          else
+            echo "$MERGE_COMMITS" | while IFS= read -r commit_msg; do
+              # Try to find a standard PR number first
+              pr_num=$(echo "$commit_msg" | sed -n 's/Merge pull request #\([0-9]*\).*/\1/p')
+
+              if [ -n "$pr_num" ]; then
+                echo "Labeling nested PR #$pr_num with tag '$TAG_NAME'."
+                gh pr edit "$pr_num" --add-label "$TAG_NAME" || echo "Failed to label PR #$pr_num."
+              else
+                # If no PR number, it might be a merge of a branch. Try to find the PR by branch name.
+                branch_name=$(echo "$commit_msg" | sed -n "s/Merge branch '\([^']*\)'.*/\1/p")
+                if [ -n "$branch_name" ]; then
+                  echo "Found merge of branch '$branch_name'. Searching for its PR."
+                  # Find the PR for that branch. This is more robust.
+                  pr_num_from_branch=$(gh pr list --head "$branch_name" --state merged --json number -q '.[0].number')
+                  if [ -n "$pr_num_from_branch" ]; then
+                    echo "Found PR #$pr_num_from_branch for branch '$branch_name'. Labeling it."
+                    gh pr edit "$pr_num_from_branch" --add-label "$TAG_NAME" || echo "Failed to label PR #$pr_num_from_branch."
+                  else
+                    echo "Could not find a merged PR for branch '$branch_name'."
+                  fi
+                fi
+              fi
+            done
+          fi
+
