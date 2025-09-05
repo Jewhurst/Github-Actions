@@ -22,7 +22,7 @@ Simply add this workflow to your repository. It will automatically run whenever 
 
 ### 2. Release on Merge (`github-release.yml`)
 
-**Purpose**: Automatically creates GitHub releases with semantic versioning when pull requests are merged to the master branch.
+**Purpose**: Automatically creates GitHub releases with semantic versioning when pull requests are merged to the master branch, and labels all associated PRs so you can quickly identify which pull requests are included in each release. 
 
 **Triggers**:
 - When a pull request is closed (merged) to the master branch
@@ -37,9 +37,12 @@ Simply add this workflow to your repository. It will automatically run whenever 
   - Other branches: Creates development releases with `-dev` suffix (e.g., v1.0.0-dev)
 - **Skip Release Option**: Add `no-release` label to a PR to prevent release creation
 - **Automatic Release Notes**: Generates release notes automatically from commit history
-- **PR Labeling**: 
-  - Creates version labels and applies them to the main PR
-  - Automatically finds and labels nested PRs that were merged as part of the release
+- **Comprehensive PR Labeling**: 
+  - Creates version labels (e.g., `v1.2.3`) and applies them to the main PR
+  - Automatically finds and labels ALL nested PRs that were merged as part of the release
+  - Provides quick visual identification of which PRs are included in each release
+  - Searches through merge commit history to identify all associated pull requests
+  - Labels both standard GitHub merge commits and branch merges
 - **Full Git History**: Fetches complete git history for accurate version calculation
 
 **Version Labels**:
